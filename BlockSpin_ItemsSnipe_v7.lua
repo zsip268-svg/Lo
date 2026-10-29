@@ -42,12 +42,12 @@ local function parsePlaceId(s)
 end
 
 local function joinServer(jobId, server)
+    if not jobId or jobId == "" then return false end
     local placeId = parsePlaceId(server) or game.PlaceId
-    if not jobId or jobId == "" then return end
     local ok = pcall(function()
         TeleportService:TeleportToPlaceInstance(placeId, jobId, LP)
     end)
-    if not ok then pcall(function() TeleportService:Teleport(placeId, LP) end) end
+    return ok
 end
 
 -- ═══════════════════════════════════════
@@ -153,10 +153,14 @@ local rows = {}
 local filterBtns = {}
 local pages = {}
 local renderList  -- forward declaration
+local seenIds, newIds = {}, {}      -- ตามดู jobId ที่เคยเห็น / เพิ่งเข้ามาใหม่
+local firstLoad, lastUpdate = true, nil
+local lastSig = nil               -- ลายเซ็นของหน้าที่แสดงอยู่ ไว้เช็คว่าต้องวาดใหม่ไหม
 
 local function selectRarity(name)
     selectedRarity = name
     currentPage = 1
+    lastSig = nil
     for n, f in pairs(filterBtns) do
         local on = (n == name)
         tw(f.btn, {BackgroundColor3 = on and C.row or C.panel})
@@ -198,7 +202,7 @@ frame({color = C.accent, sz = UDim2.new(0, 28, 0, 2), pos = UDim2.new(0, 14, 1, 
 
 lbl({text = "BLOCK SPIN", parent = TitleBar, sz = UDim2.new(0, 200, 0, 16), pos = UDim2.new(0, 14, 0, 7),
     font = Enum.Font.GothamBlack, size = 13})
-lbl({text = "ITEMS SNIPE  //  v7", parent = TitleBar, sz = UDim2.new(0, 220, 0, 12), pos = UDim2.new(0, 14, 0, 24),
+lbl({text = "ITEMS SNIPE  //  v7.2", parent = TitleBar, sz = UDim2.new(0, 220, 0, 12), pos = UDim2.new(0, 14, 0, 24),
     font = FONT_MONO, size = 9, color = C.mute})
 
 local function titleBtn(text, xOff, w)
@@ -417,26 +421,59 @@ end
 local function makeRow(col, idx)
     local jobId, item, rarity, players, target, server = table.unpack(col)
     local rc = RARITY[rarity] or RARITY.Default
+    local isNew = jobId and newIds[jobId]
 
-    local row = frame({color = C.panel, sz = UDim2.new(1, 0, 0, 40), parent = Scroll})
+    local row = frame({color = C.panel, sz = UDim2.new(1, 0, 0, 46), parent = Scroll})
     row.LayoutOrder = idx
     row.ClipsDescendants = true
     corner(row, 3)
     stroke(row, C.line, 1)
 
-    frame({color = rc, sz = UDim2.new(0, 2, 1, 0), parent = row})
+    frame({color = rc, sz = UDim2.new(0, 2, 1, 0), parent = row, z = 2})
 
-    lbl({text = tostring(item or "?"), parent = row, sz = UDim2.new(0.42, 0, 0, 16), pos = UDim2.new(0, 12, 0, 5),
+    -- แฟลชเมื่อมีเซิร์ฟใหม่เข้ามาแบบสด ๆ
+    if isNew then
+        local flash = frame({color = C.accent, bgt = 0.75, parent = row, z = 0})
+        tw(flash, {BackgroundTransparency = 1}, 2)
+        task.delay(2.1, function() if flash.Parent then flash:Destroy() end end)
+    end
+
+    -- บรรทัดบน: ชื่อไอเทม / แรร์ / จำนวนคน / เซิร์ฟ
+    lbl({text = tostring(item or "?"), parent = row, sz = UDim2.new(0.30, 0, 0, 16), pos = UDim2.new(0, 12, 0, 5),
         font = Enum.Font.GothamBold, size = 12})
-    lbl({text = tostring(target or "—"), parent = row, sz = UDim2.new(0.42, 0, 0, 12), pos = UDim2.new(0, 12, 0, 22),
+    lbl({text = string.upper(tostring(rarity or "")), parent = row, sz = UDim2.new(0.14, 0, 0, 16), pos = UDim2.new(0.32, 0, 0, 5),
+        font = Enum.Font.GothamBlack, size = 9, color = rc})
+    lbl({text = string.format("%02d PLR", tonumber(players) or 0), parent = row, sz = UDim2.new(0.12, 0, 0, 16),
+        pos = UDim2.new(0.46, 0, 0, 5), font = FONT_MONO, size = 9, color = C.sub})
+    lbl({text = tostring(server or ""), parent = row, sz = UDim2.new(0.24, 0, 0, 16), pos = UDim2.new(0.59, 0, 0, 5),
         font = FONT_MONO, size = 9, color = C.mute})
 
-    lbl({text = string.upper(tostring(rarity or "")), parent = row, sz = UDim2.new(0.2, 0, 0, 14), pos = UDim2.new(0.44, 0, 0, 5),
-        font = Enum.Font.GothamBlack, size = 9, color = rc})
-    lbl({text = string.format("%02d PLR", tonumber(players) or 0), parent = row, sz = UDim2.new(0.2, 0, 0, 12),
-        pos = UDim2.new(0.44, 0, 0, 22), font = FONT_MONO, size = 9, color = C.sub})
+    -- บรรทัดล่าง: JobId (กดเพื่อคัดลอก) / target
+    local jobBtn = Instance.new("TextButton")
+    jobBtn.BackgroundTransparency = 1
+    jobBtn.BorderSizePixel = 0
+    jobBtn.Size = UDim2.new(0.62, 0, 0, 14)
+    jobBtn.Position = UDim2.new(0, 12, 0, 25)
+    jobBtn.Font = FONT_MONO
+    jobBtn.TextSize = 9
+    jobBtn.TextXAlignment = Enum.TextXAlignment.Left
+    jobBtn.TextTruncate = Enum.TextTruncate.AtEnd
+    jobBtn.TextColor3 = C.accent
+    jobBtn.Text = tostring(jobId or "—")
+    jobBtn.AutoButtonColor = false
+    jobBtn.Parent = row
+    jobBtn.MouseEnter:Connect(function() tw(jobBtn, {TextColor3 = C.text}) end)
+    jobBtn.MouseLeave:Connect(function() tw(jobBtn, {TextColor3 = C.accent}) end)
+    jobBtn.MouseButton1Click:Connect(function()
+        local copy = setclipboard or toclipboard or (syn and syn.write_clipboard)
+        if copy and jobId then pcall(copy, tostring(jobId)) end
+        jobBtn.Text = "COPIED"
+        task.delay(1, function()
+            if jobBtn.Parent then jobBtn.Text = tostring(jobId or "—") end
+        end)
+    end)
 
-    lbl({text = tostring(server or ""), parent = row, sz = UDim2.new(0.22, 0, 0, 14), pos = UDim2.new(0.64, 0, 0, 5),
+    lbl({text = tostring(target or "—"), parent = row, sz = UDim2.new(0.22, 0, 0, 14), pos = UDim2.new(0.66, 0, 0, 25),
         font = FONT_MONO, size = 9, color = C.mute})
 
     local join = Instance.new("TextButton")
@@ -450,6 +487,7 @@ local function makeRow(col, idx)
     join.Font = Enum.Font.GothamBlack
     join.TextSize = 10
     join.AutoButtonColor = false
+    join.ZIndex = 3
     join.Parent = row
     corner(join, 3)
     stroke(join, C.accent, 1)
@@ -461,8 +499,8 @@ local function makeRow(col, idx)
         tw(join, {BackgroundTransparency = 1, TextColor3 = C.accent})
     end)
     join.MouseButton1Click:Connect(function()
-        join.Text = "···"
-        joinServer(jobId, server)
+        local ok = joinServer(jobId, server)
+        join.Text = ok and "···" or "FAIL"
         task.delay(1.5, function()
             if join.Parent then join.Text = "JOIN" end
         end)
@@ -499,7 +537,6 @@ local function getFiltered()
 end
 
 renderList = function()
-    clearRows()
     updateCounts()
 
     local filtered = getFiltered()
@@ -509,6 +546,19 @@ renderList = function()
 
     local startIdx = (currentPage - 1) * PER_PAGE + 1
     local endIdx = math.min(startIdx + PER_PAGE - 1, total)
+
+    -- ถ้าแถวที่มองเห็นไม่เปลี่ยน ไม่ต้องวาดใหม่ (ไม่งั้นปุ่ม JOIN โดนลบตอนกดพอดี)
+    local parts = {selectedRarity, currentPage, total}
+    for i = startIdx, endIdx do
+        local c = filtered[i]
+        parts[#parts + 1] = table.concat({tostring(c[1]), tostring(c[2]), tostring(c[3]), tostring(c[4])}, "|")
+    end
+    local sig = table.concat(parts, ";")
+    if sig == lastSig then return end
+    lastSig = sig
+
+    local keepPos = Scroll.CanvasPosition
+    clearRows()
 
     Empty.Visible = (total == 0)
     if #allData == 0 then
@@ -542,11 +592,13 @@ renderList = function()
     PageInfo.Text = string.format("%02d / %02d", currentPage, totalPages)
     PrevBtn.TextColor3 = currentPage <= 1 and C.mute or C.text
     NextBtn.TextColor3 = currentPage >= totalPages and C.mute or C.text
+    task.defer(function() Scroll.CanvasPosition = keepPos end)
 end
 
 PrevBtn.MouseButton1Click:Connect(function()
     if currentPage > 1 then
         currentPage = currentPage - 1
+        lastSig = nil
         renderList()
     end
 end)
@@ -554,18 +606,52 @@ NextBtn.MouseButton1Click:Connect(function()
     local tp = math.max(1, math.ceil(#getFiltered() / PER_PAGE))
     if currentPage < tp then
         currentPage = currentPage + 1
+        lastSig = nil
         renderList()
     end
 end)
 
+local function extractCols(payload)
+    if type(payload) ~= "table" then return nil end
+    local d = payload.data
+    if type(d) == "table" then
+        if type(d.columns) == "table" then return d.columns end
+        if #d > 0 then return d end
+    end
+    if type(payload.columns) == "table" then return payload.columns end
+    if #payload > 0 then return payload end
+    return nil
+end
+
 local function updateFromPayload(payload)
-    if type(payload) ~= "table" or not payload.data then return end
-    local cols = payload.data.columns
-    if type(cols) ~= "table" then return end
+    local cols = extractCols(payload)
+    if not cols then return end
+
+    -- หา jobId ที่เพิ่งเข้ามาใหม่ (ไม่ flash ตอนโหลดครั้งแรก)
+    table.clear(newIds)
+    for _, col in ipairs(cols) do
+        local id = col[1]
+        if id and not seenIds[id] then
+            seenIds[id] = true
+            if not firstLoad then newIds[id] = true end
+        end
+    end
+    firstLoad = false
+
     allData = cols
-    StatTime.Text = os.date("%H:%M:%S")
+    lastUpdate = os.clock()
     renderList()
 end
+
+-- ตัวเลข "UPD 3s" เดินทุกวินาที ให้เห็นว่าข้อมูลสดอยู่
+task.spawn(function()
+    while Gui.Parent do
+        if lastUpdate then
+            StatTime.Text = string.format("UPD %ds", math.floor(os.clock() - lastUpdate))
+        end
+        task.wait(1)
+    end
+end)
 
 local function setConn(state)
     local col, txt
@@ -589,8 +675,13 @@ end
 local ws, running = nil, true
 
 local function onMsg(msg)
-    local ok, data = pcall(function() return HttpService:JSONDecode(msg) end)
-    if ok and data and (data.type == "initial" or data.data) then
+    local data = msg
+    if type(msg) == "string" then
+        local ok, decoded = pcall(function() return HttpService:JSONDecode(msg) end)
+        if not ok then return end
+        data = decoded
+    end
+    if type(data) == "table" and extractCols(data) then
         updateFromPayload(data)
         setConn("live")
     end
@@ -665,4 +756,4 @@ end
 
 showTab("SNIPE")
 connect()
-print("[BS Snipe] v7")
+print("[BS Snipe] v7.2")
