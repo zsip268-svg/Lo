@@ -1,7 +1,10 @@
 --[[
-    Block Spin · Items Snipe  (v7 — restyled)
+    Block Spin · Items Snipe  (v7.3 — realtime WS fix)
     กดปุ่ม rarity = ดูเฉพาะเซิร์ฟที่มีแรร์นั้น
     wss://api.boblox-script.com/block-spin/items-snipe/ws
+
+    Fix: WebSocket OnMessage รองรับทั้ง :Connect และ assignment
+         + อัปเดตสถิติทุกครั้ง + signature ครบทุก field
 ]]
 
 local HttpService      = game:GetService("HttpService")
@@ -202,7 +205,7 @@ frame({color = C.accent, sz = UDim2.new(0, 28, 0, 2), pos = UDim2.new(0, 14, 1, 
 
 lbl({text = "BLOCK SPIN", parent = TitleBar, sz = UDim2.new(0, 200, 0, 16), pos = UDim2.new(0, 14, 0, 7),
     font = Enum.Font.GothamBlack, size = 13})
-lbl({text = "ITEMS SNIPE  //  v7.2", parent = TitleBar, sz = UDim2.new(0, 220, 0, 12), pos = UDim2.new(0, 14, 0, 24),
+lbl({text = "ITEMS SNIPE  //  v7.3", parent = TitleBar, sz = UDim2.new(0, 220, 0, 12), pos = UDim2.new(0, 14, 0, 24),
     font = FONT_MONO, size = 9, color = C.mute})
 
 local function titleBtn(text, xOff, w)
@@ -407,7 +410,7 @@ lbl({text = "กด JOIN เพื่อเทเลพอร์ตเข้า�
     font = Enum.Font.Gotham, size = 12, color = C.sub})
 lbl({text = "BLOCK SPIN · ITEMS SNIPE", parent = InfoCard, sz = UDim2.new(1, -28, 0, 16), pos = UDim2.new(0, 14, 0, 140),
     font = FONT_MONO, size = 10, color = C.mute})
-lbl({text = "v7", parent = InfoCard, sz = UDim2.new(1, -28, 0, 16), pos = UDim2.new(0, 14, 0, 158),
+lbl({text = "v7.3", parent = InfoCard, sz = UDim2.new(1, -28, 0, 16), pos = UDim2.new(0, 14, 0, 158),
     font = FONT_MONO, size = 10, color = C.mute})
 
 -- ═══════════════════════════════════════
@@ -547,11 +550,35 @@ renderList = function()
     local startIdx = (currentPage - 1) * PER_PAGE + 1
     local endIdx = math.min(startIdx + PER_PAGE - 1, total)
 
+    -- อัปเดตข้อความสถิติทุกครั้ง (ไม่ขึ้นกับ sig) เพื่อให้เห็นข้อมูลสด
+    if selectedRarity == "All" then
+        HintLbl.Text = "กดแรร์เพื่อกรองเฉพาะเซิร์ฟที่มีแรร์นั้น"
+        if total == 0 then
+            StatItems.Text = "0 ITEMS"
+        else
+            StatItems.Text = string.format("%d–%d / %d", startIdx, endIdx, total)
+        end
+    else
+        HintLbl.Text = "กรอง: " .. selectedRarity .. "  ·  กด ALL เพื่อล้าง"
+        if total == 0 then
+            StatItems.Text = "0 " .. string.upper(selectedRarity)
+        else
+            StatItems.Text = string.format("%d–%d / %d  %s", startIdx, endIdx, total, string.upper(selectedRarity))
+        end
+    end
+    PageInfo.Text = string.format("%02d / %02d", currentPage, totalPages)
+    PrevBtn.TextColor3 = currentPage <= 1 and C.mute or C.text
+    NextBtn.TextColor3 = currentPage >= totalPages and C.mute or C.text
+
     -- ถ้าแถวที่มองเห็นไม่เปลี่ยน ไม่ต้องวาดใหม่ (ไม่งั้นปุ่ม JOIN โดนลบตอนกดพอดี)
+    -- รวม target + server ด้วย เพื่อจับการเปลี่ยนแปลงครบ
     local parts = {selectedRarity, currentPage, total}
     for i = startIdx, endIdx do
         local c = filtered[i]
-        parts[#parts + 1] = table.concat({tostring(c[1]), tostring(c[2]), tostring(c[3]), tostring(c[4])}, "|")
+        parts[#parts + 1] = table.concat({
+            tostring(c[1]), tostring(c[2]), tostring(c[3]),
+            tostring(c[4]), tostring(c[5]), tostring(c[6])
+        }, "|")
     end
     local sig = table.concat(parts, ";")
     if sig == lastSig then return end
@@ -573,25 +600,6 @@ renderList = function()
         table.insert(rows, makeRow(filtered[i], i))
     end
 
-    if selectedRarity == "All" then
-        HintLbl.Text = "กดแรร์เพื่อกรองเฉพาะเซิร์ฟที่มีแรร์นั้น"
-        if total == 0 then
-            StatItems.Text = "0 ITEMS"
-        else
-            StatItems.Text = string.format("%d–%d / %d", startIdx, endIdx, total)
-        end
-    else
-        HintLbl.Text = "กรอง: " .. selectedRarity .. "  ·  กด ALL เพื่อล้าง"
-        if total == 0 then
-            StatItems.Text = "0 " .. string.upper(selectedRarity)
-        else
-            StatItems.Text = string.format("%d–%d / %d  %s", startIdx, endIdx, total, string.upper(selectedRarity))
-        end
-    end
-
-    PageInfo.Text = string.format("%02d / %02d", currentPage, totalPages)
-    PrevBtn.TextColor3 = currentPage <= 1 and C.mute or C.text
-    NextBtn.TextColor3 = currentPage >= totalPages and C.mute or C.text
     task.defer(function() Scroll.CanvasPosition = keepPos end)
 end
 
@@ -670,26 +678,74 @@ local function setConn(state)
 end
 
 -- ═══════════════════════════════════════
---  Websocket
+--  Websocket  (รองรับทั้ง Signal:Connect และ assign function)
 -- ═══════════════════════════════════════
 local ws, running = nil, true
 
 local function onMsg(msg)
     local data = msg
     if type(msg) == "string" then
-        local ok, decoded = pcall(function() return HttpService:JSONDecode(msg) end)
-        if not ok then return end
+        -- บาง executor ส่ง string ที่มี whitespace / BOM
+        local cleaned = (msg:match("^%s*(.-)%s*$") or msg)
+        if cleaned == "" then return end
+        local ok, decoded = pcall(function() return HttpService:JSONDecode(cleaned) end)
+        if not ok or type(decoded) ~= "table" then return end
         data = decoded
+    elseif type(msg) == "table" then
+        data = msg
+    else
+        return
     end
-    if type(data) == "table" and extractCols(data) then
+    if extractCols(data) then
         updateFromPayload(data)
         setConn("live")
     end
 end
 
+-- ผูก event ให้รองรับหลาย executor:
+--   1) RBXScriptSignal  → :Connect(fn)
+--   2) writeable property → ws.OnMessage = fn
+--   3) lowercase variants (onMessage / onClose)
+local function bindEvent(sock, names, handler)
+    for _, name in ipairs(names) do
+        local ev = nil
+        pcall(function() ev = sock[name] end)
+
+        -- Signal style (:Connect)
+        if ev ~= nil then
+            local isSignal = false
+            pcall(function()
+                if typeof(ev) == "RBXScriptSignal" or (type(ev) == "userdata" and type(ev.Connect) == "function") then
+                    isSignal = true
+                end
+            end)
+            if isSignal then
+                local ok = pcall(function() ev:Connect(handler) end)
+                if ok then return true end
+            end
+        end
+
+        -- Assignment style (ws.OnMessage = fn) — ลองแม้ property เป็น nil
+        local ok = pcall(function() sock[name] = handler end)
+        if ok then return true end
+    end
+    return false
+end
+
 local function connect()
     if not running then return end
     setConn("wait")
+
+    -- ปิด socket เก่าก่อน (กัน leak)
+    if ws then
+        pcall(function()
+            if ws.Close then ws:Close() end
+            if ws.close then ws:close() end
+            if ws.Disconnect then ws:Disconnect() end
+        end)
+        ws = nil
+    end
+
     local ok, sock = pcall(connectWS, WS_URL)
     if not ok or not sock then
         setConn("error")
@@ -697,16 +753,27 @@ local function connect()
         return
     end
     ws = sock
-    setConn("live")
-    if sock.OnMessage then sock.OnMessage:Connect(onMsg) end
-    pcall(function()
-        if sock.OnClose then
-            sock.OnClose:Connect(function()
-                setConn("offline")
-                ws = nil
-                task.delay(3, connect)
-            end)
-        end
+
+    local msgBound = bindEvent(sock, {"OnMessage", "onMessage", "Onmessage"}, onMsg)
+    bindEvent(sock, {"OnClose", "onClose", "Onclose"}, function()
+        if not running then return end
+        setConn("offline")
+        ws = nil
+        task.delay(3, connect)
+    end)
+
+    if msgBound then
+        setConn("live")
+    else
+        -- fallback: assign ตรง ๆ (บาง executor ต้อง set ก่อนที่ event จะถูกสร้าง)
+        pcall(function() sock.OnMessage = onMsg end)
+        pcall(function() sock.onMessage = onMsg end)
+        setConn("live")
+    end
+
+    -- บางตัวมี OnOpen / OnConnect
+    bindEvent(sock, {"OnOpen", "onOpen", "OnConnect", "onConnect"}, function()
+        setConn("live")
     end)
 end
 
@@ -718,6 +785,7 @@ Gui.Destroying:Connect(function()
             if ws.close then ws:close() end
             if ws.Disconnect then ws:Disconnect() end
         end)
+        ws = nil
     end
 end)
 
@@ -756,4 +824,4 @@ end
 
 showTab("SNIPE")
 connect()
-print("[BS Snipe] v7.2")
+print("[BS Snipe] v7.3 — realtime WS fix")
